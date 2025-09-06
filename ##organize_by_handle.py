@@ -8,6 +8,13 @@ This version PRESERVES the exact handle as it appears at the start of the filena
 - Preserves original casing (no lowercasing).
 - Still trims off numeric/date tails following the handle.
 
+Fixes (2025-09-06):
+- Handle detection is now more robust by first splitting the name at common
+  metadata separators like spaces or brackets before processing.
+
+Fixes (2025-09-05):
+- Date/numeric tail regex now correctly trims complex timestamps (e.g., YYYY_MM_DD_HH_MM).
+
 Fixes (2025-08-23):
 - Trailing-handle regex now works on the stem (no extension), covering date/ID tails.
 - "@ anywhere" fallback now validated with has-letter + not-camera-prefix checks.
@@ -57,9 +64,10 @@ def take_leading_handle_token_preserve(stem: str) -> Optional[str]:
     Steps:
       1) Skip decorative junk until we hit an allowed start char: [A-Za-z0-9@_.]
       2) If first allowed char is '@', drop just the '@'.
-      3) Collect allowed chars [A-Za-z0-9._] up to first hard separator.
-      4) Cut numeric/date tail (with or without underscore before digits).
-      5) Validate: length 3..30, contains a letter, not a camera prefix.
+      3) Isolate the initial part before any hard separator (space, bracket, etc.).
+      4) Collect allowed chars [A-Za-z0-9._] from this initial part.
+      5) Cut numeric/date tail from the collected token.
+      6) Validate: length 3..30, contains a letter, not a camera prefix.
     """
     # 1) Skip non-allowed decorations only (DO NOT strip leading '_' or '.')
     i = 0
@@ -74,23 +82,31 @@ def take_leading_handle_token_preserve(stem: str) -> Optional[str]:
     if stem and stem[0] == '@':
         stem = stem[1:]
 
-    # 3) Collect token
+    # 3) Isolate part before a hard separator (e.g., ' ' or '[').
+    match = re.search(r'[\s\[\(#]', stem)
+    if match:
+        potential_handle = stem[:match.start()]
+    else:
+        potential_handle = stem
+
+    # 4) Collect allowed token characters from the potential handle.
     token_chars = []
-    for ch in stem:
+    for ch in potential_handle:
         if ch.isalnum() or ch in '._':
             token_chars.append(ch)
             if len(token_chars) >= 30:
                 break
         else:
+            # Stop at other separators like hyphens (e.g., 'handle-description')
             break
     token = ''.join(token_chars)
 
-    # 4) Cut numeric/date tail after the token, with or without underscore
-    m = re.match(r'^(.*?)(?:[_\-\.]?(?:\d{6,}|\d{4}[-._]?\d{2}[-._]?\d{2}))$', token)
+    # 5) Cut numeric/date tail after the token.
+    m = re.match(r'^(.*?)(?:[_\-\.]?(?:\d{6,}|(?:\d{4}[-._]?\d{2}[-._]?\d{2}[-._\d]*)))$', token)
     if m:
         token = m.group(1) or token
 
-    # 5) Validate (do NOT strip trailing '_' or '.')
+    # 6) Validate (do NOT strip trailing '_' or '.')
     if len(token) < 3:
         return None
     if not has_letter(token):
